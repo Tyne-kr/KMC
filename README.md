@@ -2,6 +2,12 @@
 
 macOS menu bar utility that combines scroll reversal, mouse gesture-based Space switching, and Caps Lock delay removal in a single lightweight app.
 
+> **Note:** 현재 UI는 한국어로 제공됩니다. This app is currently developed for Korean users.
+
+<p align="center">
+  <img src="screenshot.png" width="420" alt="KMC Settings">
+</p>
+
 ## Why?
 
 Jc가 MacBook Pro에서 Logitech G309 게이밍 마우스를 사용하던 중 겪은 불편함에서 시작된 프로젝트입니다.
