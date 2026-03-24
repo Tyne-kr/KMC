@@ -1,0 +1,4 @@
+module CSPI {
+    header "CoreGraphicsSPI.h"
+    export *
+}
