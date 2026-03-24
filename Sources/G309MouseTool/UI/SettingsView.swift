@@ -23,6 +23,7 @@ struct SettingsView: View {
     @ObservedObject private var reverser = ScrollReverser.shared
     @ObservedObject private var remapper = ButtonRemapper.shared
     @ObservedObject private var capsLock = CapsLockManager.shared
+    @ObservedObject private var fnKey = FnKeyManager.shared
     @State private var showEventLogger = false
 
     var body: some View {
@@ -36,6 +37,7 @@ struct SettingsView: View {
                 scrollReverserCard
                 buttonRemapperCard
                 capsLockCard
+                fnKeyCard
                 Spacer(minLength: 0)
                 footerSection
             }
@@ -271,11 +273,61 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Fn Key Card
+
+    @State private var fnKeyTab: Int = 0
+
+    private var fnKeyCard: some View {
+        GHCard {
+            VStack(spacing: 8) {
+                HStack {
+                    Image(systemName: "keyboard")
+                        .foregroundColor(.ghAccent)
+                        .font(.system(size: 14))
+                    Text("F1~F12 표준 기능키 사용")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.ghTextPri)
+                    Spacer()
+                    GHToggle(isOn: $fnKey.useStandardFnKeys)
+                }
+
+                if fnKey.useStandardFnKeys {
+                    // External / Internal keyboard tabs
+                    Picker("", selection: $fnKeyTab) {
+                        Text("외장 키보드").tag(0)
+                        Text("내장 키보드").tag(1)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    if fnKeyTab == 0 {
+                        Text("미디어키(볼륨/밝기 등)를 F1~F12로 변환합니다")
+                            .font(.system(size: 10))
+                            .foregroundColor(.ghTextTer)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        HStack {
+                            Text("시스템 기능키 모드")
+                                .font(.system(size: 11))
+                                .foregroundColor(.ghTextSec)
+                            Spacer()
+                            GHToggle(isOn: $fnKey.internalFnState)
+                        }
+                        Text("macOS 설정의 \"F1~F12를 표준 기능 키로 사용\"을 전환합니다")
+                            .font(.system(size: 10))
+                            .foregroundColor(.ghTextTer)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Footer
 
     private var footerSection: some View {
         HStack {
-            Text("KMC v1.5.0 by Jc")
+            Text("KMC v1.9.0 by Jc")
                 .font(.system(size: 10))
                 .foregroundColor(.ghTextTer)
 

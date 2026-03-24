@@ -35,9 +35,9 @@ final class CapsLockManager: ObservableObject {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: "CapsLock.remapF18")
             if isEnabled {
-                enable()
+                enableAsync()
             } else {
-                disable()
+                disableAsync()
             }
         }
     }
@@ -45,6 +45,7 @@ final class CapsLockManager: ObservableObject {
     private init() {
         let saved = UserDefaults.standard.bool(forKey: "CapsLock.remapF18")
         if saved {
+            // didSet will call enableAsync() — no need to call it separately
             isEnabled = true
         }
     }
@@ -52,29 +53,28 @@ final class CapsLockManager: ObservableObject {
     /// Re-apply on launch and wake from sleep
     func reapplyIfNeeded() {
         if isEnabled {
-            enable()
+            enableAsync()
         }
     }
 
-    // MARK: - Enable / Disable
+    // MARK: - Enable / Disable (non-blocking)
 
-    private func enable() {
-        // 1. Remap Caps Lock → F18 at HID level + remove delay
-        let json = """
-        {"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":\(Self.capsLockSrc),"HIDKeyboardModifierMappingDst":\(Self.f18Dst)}],"CapsLockDelayOverride":0}
-        """
-        runHidutil(json: json)
-
-        // 2. Set F18 as "다음 입력 소스 선택" shortcut
-        setInputSourceShortcutToF18()
-
-        fputs("[CapsLock] Enabled: Caps Lock → F18 + shortcut assigned\n", stderr)
+    private func enableAsync() {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let json = """
+            {"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":\(Self.capsLockSrc),"HIDKeyboardModifierMappingDst":\(Self.f18Dst)}],"CapsLockDelayOverride":0}
+            """
+            runHidutil(json: json)
+            setInputSourceShortcutToF18()
+            fputs("[CapsLock] Enabled: Caps Lock → F18 + shortcut assigned\n", stderr)
+        }
     }
 
-    private func disable() {
-        // Restore Caps Lock and default delay
-        runHidutil(json: #"{"UserKeyMapping":[],"CapsLockDelayOverride":500000}"#)
-        fputs("[CapsLock] Disabled: restored defaults\n", stderr)
+    private func disableAsync() {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            runHidutil(json: #"{"UserKeyMapping":[],"CapsLockDelayOverride":500000}"#)
+            fputs("[CapsLock] Disabled: restored defaults\n", stderr)
+        }
     }
 
     // MARK: - Shortcut Assignment

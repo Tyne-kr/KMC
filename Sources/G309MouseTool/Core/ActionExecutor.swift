@@ -8,21 +8,23 @@ import Cocoa
 enum ActionExecutor {
 
     // MARK: - Pre-computed CGEventField constants (undocumented fields)
+    // CGEventField(rawValue:) returns optional; these are validated once at static init.
+    // If Apple ever removes a field ID, the app will log an error rather than crash.
 
-    private static let fieldEventType       = CGEventField(rawValue: 55)!   // Event type override
-    private static let fieldSubtype         = CGEventField(rawValue: 110)!  // IOHIDEvent subtype
-    private static let fieldPhase           = CGEventField(rawValue: 132)!  // Phase
-    private static let fieldPhaseDup        = CGEventField(rawValue: 134)!  // Phase duplicate
-    private static let fieldOriginOffset    = CGEventField(rawValue: 124)!  // Cumulative offset
-    private static let fieldEncodedOffset   = CGEventField(rawValue: 135)!  // Float32-as-Int64 offset
-    private static let fieldDockSwipeType   = CGEventField(rawValue: 123)!  // 1=H, 2=V, 3=pinch
-    private static let fieldDockSwipeTypeDup = CGEventField(rawValue: 165)! // Type duplicate
-    private static let fieldWeirdType       = CGEventField(rawValue: 119)!  // Encoded type float
-    private static let fieldWeirdTypeDup    = CGEventField(rawValue: 139)!  // Encoded type dup
-    private static let fieldConstant41      = CGEventField(rawValue: 41)!   // Magic constant
-    private static let fieldInverted        = CGEventField(rawValue: 136)!  // invertedFromDevice
-    private static let fieldExitSpeed1      = CGEventField(rawValue: 129)!  // Exit speed
-    private static let fieldExitSpeed2      = CGEventField(rawValue: 130)!  // Exit speed dup
+    private static let fieldEventType       = CGEventField(rawValue: 55)
+    private static let fieldSubtype         = CGEventField(rawValue: 110)
+    private static let fieldPhase           = CGEventField(rawValue: 132)
+    private static let fieldPhaseDup        = CGEventField(rawValue: 134)
+    private static let fieldOriginOffset    = CGEventField(rawValue: 124)
+    private static let fieldEncodedOffset   = CGEventField(rawValue: 135)
+    private static let fieldDockSwipeType   = CGEventField(rawValue: 123)
+    private static let fieldDockSwipeTypeDup = CGEventField(rawValue: 165)
+    private static let fieldWeirdType       = CGEventField(rawValue: 119)
+    private static let fieldWeirdTypeDup    = CGEventField(rawValue: 139)
+    private static let fieldConstant41      = CGEventField(rawValue: 41)
+    private static let fieldInverted        = CGEventField(rawValue: 136)
+    private static let fieldExitSpeed1      = CGEventField(rawValue: 129)
+    private static let fieldExitSpeed2      = CGEventField(rawValue: 130)
 
     // MARK: - Constants
 
@@ -48,7 +50,9 @@ enum ActionExecutor {
     static func executeSpaceSwitch(direction: GestureAction) {
         let sign: Double = (direction == .swipeRight) ? -1.0 : 1.0
 
+        #if DEBUG
         fputs("[ActionExecutor] executeSpaceSwitch: \(direction) sign=\(sign)\n", stderr)
+        #endif
 
         DispatchQueue.global(qos: .userInteractive).async {
             let steps: [(phase: Int64, offset: Double)] = [
@@ -72,43 +76,56 @@ enum ActionExecutor {
             usleep(300_000)
             postDockSwipeEvent(phase: kPhaseEnded, originOffset: finalOffset, type: kDockSwipeHorizontal)
 
+            #if DEBUG
             fputs("[ActionExecutor] DockSwipe completed: \(direction == .swipeRight ? "→" : "←")\n", stderr)
+            #endif
         }
     }
 
     // MARK: - DockSwipe Event Posting
 
     private static func postDockSwipeEvent(phase: Int64, originOffset: Double, type: Int64) {
+        // Validate that undocumented fields are available
+        guard let fEventType = fieldEventType, let fSubtype = fieldSubtype,
+              let fPhase = fieldPhase, let fPhaseDup = fieldPhaseDup,
+              let fOriginOffset = fieldOriginOffset, let fEncodedOffset = fieldEncodedOffset,
+              let fDockSwipeType = fieldDockSwipeType, let fDockSwipeTypeDup = fieldDockSwipeTypeDup,
+              let fWeirdType = fieldWeirdType, let fWeirdTypeDup = fieldWeirdTypeDup,
+              let fConstant41 = fieldConstant41, let fInverted = fieldInverted
+        else {
+            fputs("[DockSwipe] ERROR: CGEventField unavailable on this macOS version\n", stderr)
+            return
+        }
+
         guard let e30 = CGEvent(source: nil) else { return }
 
-        e30.setIntegerValueField(fieldEventType, value: kEventTypeMagnify)
-        e30.setDoubleValueField(fieldSubtype, value: Double(kDockSwipeSubtype))
-        e30.setDoubleValueField(fieldPhase, value: Double(phase))
-        e30.setDoubleValueField(fieldPhaseDup, value: Double(phase))
-        e30.setDoubleValueField(fieldOriginOffset, value: originOffset)
-        e30.setDoubleValueField(fieldConstant41, value: kMagicConstant)
-        e30.setDoubleValueField(fieldDockSwipeType, value: Double(type))
-        e30.setDoubleValueField(fieldDockSwipeTypeDup, value: Double(type))
-        e30.setDoubleValueField(fieldWeirdType, value: weirdHorizontalTypeValue)
-        e30.setDoubleValueField(fieldWeirdTypeDup, value: weirdHorizontalTypeValue)
+        e30.setIntegerValueField(fEventType, value: kEventTypeMagnify)
+        e30.setDoubleValueField(fSubtype, value: Double(kDockSwipeSubtype))
+        e30.setDoubleValueField(fPhase, value: Double(phase))
+        e30.setDoubleValueField(fPhaseDup, value: Double(phase))
+        e30.setDoubleValueField(fOriginOffset, value: originOffset)
+        e30.setDoubleValueField(fConstant41, value: kMagicConstant)
+        e30.setDoubleValueField(fDockSwipeType, value: Double(type))
+        e30.setDoubleValueField(fDockSwipeTypeDup, value: Double(type))
+        e30.setDoubleValueField(fWeirdType, value: weirdHorizontalTypeValue)
+        e30.setDoubleValueField(fWeirdTypeDup, value: weirdHorizontalTypeValue)
 
         var ofsFloat32 = Float32(originOffset)
         var ofsInt32: UInt32 = 0
         memcpy(&ofsInt32, &ofsFloat32, 4)
-        e30.setIntegerValueField(fieldEncodedOffset, value: Int64(ofsInt32))
-        e30.setIntegerValueField(fieldInverted, value: 1)
+        e30.setIntegerValueField(fEncodedOffset, value: Int64(ofsInt32))
+        e30.setIntegerValueField(fInverted, value: 1)
 
-        if phase == kPhaseEnded {
+        if phase == kPhaseEnded, let fSpeed1 = fieldExitSpeed1, let fSpeed2 = fieldExitSpeed2 {
             let exitSpeed = originOffset * 100.0
-            e30.setDoubleValueField(fieldExitSpeed1, value: exitSpeed)
-            e30.setDoubleValueField(fieldExitSpeed2, value: exitSpeed)
+            e30.setDoubleValueField(fSpeed1, value: exitSpeed)
+            e30.setDoubleValueField(fSpeed2, value: exitSpeed)
         }
 
         guard let e29 = CGEvent(source: nil) else { return }
-        e29.setIntegerValueField(fieldEventType, value: kEventTypeGesture)
-        e29.setDoubleValueField(fieldConstant41, value: kMagicConstant)
+        e29.setIntegerValueField(fEventType, value: kEventTypeGesture)
+        e29.setDoubleValueField(fConstant41, value: kMagicConstant)
 
-        fputs("[DockSwipe] phase=\(phase) offset=\(String(format: "%.2f", originOffset))\n", stderr)
         e30.post(tap: .cgSessionEventTap)
         e29.post(tap: .cgSessionEventTap)
     }

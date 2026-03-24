@@ -39,19 +39,19 @@ final class ScrollReverser: ObservableObject {
     // MARK: - Settings
 
     @Published var reverseMouseVertical: Bool = true {
-        didSet { UserDefaults.standard.set(reverseMouseVertical, forKey: "ScrollReverser.reverseMouseVertical") }
+        didSet { guard !isLoading else { return }; UserDefaults.standard.set(reverseMouseVertical, forKey: "ScrollReverser.reverseMouseVertical") }
     }
     @Published var reverseMouseHorizontal: Bool = false {
-        didSet { UserDefaults.standard.set(reverseMouseHorizontal, forKey: "ScrollReverser.reverseMouseHorizontal") }
+        didSet { guard !isLoading else { return }; UserDefaults.standard.set(reverseMouseHorizontal, forKey: "ScrollReverser.reverseMouseHorizontal") }
     }
     @Published var reverseTrackpadVertical: Bool = false {
-        didSet { UserDefaults.standard.set(reverseTrackpadVertical, forKey: "ScrollReverser.reverseTrackpadVertical") }
+        didSet { guard !isLoading else { return }; UserDefaults.standard.set(reverseTrackpadVertical, forKey: "ScrollReverser.reverseTrackpadVertical") }
     }
     @Published var reverseTrackpadHorizontal: Bool = false {
-        didSet { UserDefaults.standard.set(reverseTrackpadHorizontal, forKey: "ScrollReverser.reverseTrackpadHorizontal") }
+        didSet { guard !isLoading else { return }; UserDefaults.standard.set(reverseTrackpadHorizontal, forKey: "ScrollReverser.reverseTrackpadHorizontal") }
     }
     @Published var discreteScrollStep: Int32 = 3 {
-        didSet { UserDefaults.standard.set(discreteScrollStep, forKey: "ScrollReverser.discreteScrollStep") }
+        didSet { guard !isLoading else { return }; UserDefaults.standard.set(discreteScrollStep, forKey: "ScrollReverser.discreteScrollStep") }
     }
 
     // MARK: - Tap State
@@ -73,14 +73,10 @@ final class ScrollReverser: ObservableObject {
 
     // MARK: - Init
 
+    private var isLoading = true
+
     private init() {
-        loadSettings()
-    }
-
-    private func loadSettings() {
         let ud = UserDefaults.standard
-
-        // Register defaults
         ud.register(defaults: [
             "ScrollReverser.enabled": false,
             "ScrollReverser.reverseMouseVertical": true,
@@ -90,16 +86,18 @@ final class ScrollReverser: ObservableObject {
             "ScrollReverser.discreteScrollStep": 3
         ])
 
+        // Set backing storage directly — no didSet side effects
         reverseMouseVertical = ud.bool(forKey: "ScrollReverser.reverseMouseVertical")
         reverseMouseHorizontal = ud.bool(forKey: "ScrollReverser.reverseMouseHorizontal")
         reverseTrackpadVertical = ud.bool(forKey: "ScrollReverser.reverseTrackpadVertical")
         reverseTrackpadHorizontal = ud.bool(forKey: "ScrollReverser.reverseTrackpadHorizontal")
-        discreteScrollStep = Int32(ud.integer(forKey: "ScrollReverser.discreteScrollStep"))
-        if discreteScrollStep == 0 { discreteScrollStep = 3 }
+        let step = Int32(ud.integer(forKey: "ScrollReverser.discreteScrollStep"))
+        discreteScrollStep = step == 0 ? 3 : step
 
-        // Don't trigger didSet for isEnabled during init
-        let enabled = ud.bool(forKey: "ScrollReverser.enabled")
-        if enabled {
+        isLoading = false
+
+        // Now enable with side effects
+        if ud.bool(forKey: "ScrollReverser.enabled") {
             isEnabled = true
         }
     }

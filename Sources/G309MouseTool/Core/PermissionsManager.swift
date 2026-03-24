@@ -33,16 +33,20 @@ final class PermissionsManager: ObservableObject {
 
     /// Check permissions silently. Never triggers system dialogs.
     func checkState() {
-        // Accessibility: prompt=NO → silent check only
         let axState = checkAccessibility(prompt: false)
-        if axState != accessibilityEnabled {
-            accessibilityEnabled = axState
+        let imState = checkInputMonitoring(prompt: false)
+
+        // Ensure @Published mutations happen on main thread for SwiftUI
+        let update = { [weak self] in
+            guard let self = self else { return }
+            if axState != self.accessibilityEnabled { self.accessibilityEnabled = axState }
+            if imState != self.inputMonitoringEnabled { self.inputMonitoringEnabled = imState }
         }
 
-        // Input Monitoring: silent check via IOHIDCheckAccess
-        let imState = checkInputMonitoring(prompt: false)
-        if imState != inputMonitoringEnabled {
-            inputMonitoringEnabled = imState
+        if Thread.isMainThread {
+            update()
+        } else {
+            DispatchQueue.main.async(execute: update)
         }
     }
 

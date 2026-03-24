@@ -1,4 +1,5 @@
 import Cocoa
+import Combine
 import SwiftUI
 
 // MARK: - Pure AppKit entry point (no SwiftUI App protocol)
@@ -20,12 +21,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private var settingsWindow: NSWindow?
+    private var cancellables = Set<AnyCancellable>()
 
     // Lazy — do NOT initialize before NSApplication is ready
     private var scrollReverser: ScrollReverser { ScrollReverser.shared }
     private var buttonRemapper: ButtonRemapper { ButtonRemapper.shared }
     private var permissions: PermissionsManager { PermissionsManager.shared }
     private var capsLock: CapsLockManager { CapsLockManager.shared }
+    private var fnKey: FnKeyManager { FnKeyManager.shared }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         fputs("[KMC] didFinishLaunching\n", stderr)
@@ -47,6 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Apply CapsLock delay removal if enabled
         capsLock.reapplyIfNeeded()
+
+        // Observe all feature toggles to update status icon dots
+        observeFeatureStates()
+        updateStatusIcon()
 
         fputs("[KMC] Launched. AX=\(permissions.accessibilityEnabled) IM=\(permissions.inputMonitoringEnabled)\n", stderr)
     }
@@ -143,7 +150,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         scrollReverser.isEnabled.toggle()
-        updateStatusIcon()
     }
 
     @objc private func toggleButtonRemapper() {
@@ -178,8 +184,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
+    private func observeFeatureStates() {
+        // Use receive(on:) to ensure we read AFTER the value changes
+        // (@Published's $ publisher fires on willSet = before the value updates)
+        let q = DispatchQueue.main
+        scrollReverser.$isEnabled.receive(on: q).sink { [weak self] _ in self?.updateStatusIcon() }.store(in: &cancellables)
+        buttonRemapper.$isEnabled.receive(on: q).sink { [weak self] _ in self?.updateStatusIcon() }.store(in: &cancellables)
+        capsLock.$isEnabled.receive(on: q).sink { [weak self] _ in self?.updateStatusIcon() }.store(in: &cancellables)
+        fnKey.$useStandardFnKeys.receive(on: q).sink { [weak self] _ in self?.updateStatusIcon() }.store(in: &cancellables)
+    }
+
     private func updateStatusIcon() {
-        statusItem.button?.appearsDisabled = !scrollReverser.isEnabled && !buttonRemapper.isEnabled
+        guard let button = statusItem.button else { return }
+
+        let states = [
+            scrollReverser.isEnabled,
+            buttonRemapper.isEnabled,
+            capsLock.isEnabled,
+            fnKey.useStandardFnKeys,
+        ]
+
+        let anyEnabled = states.contains(true)
+        button.appearsDisabled = !anyEnabled
+
+        // Detect dark/light menu bar
+        let isDark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let iconColor: NSColor = isDark ? .white : .black
+
+        // Create composite image: mouse icon on top + 4 dots at bottom
+        let totalSize = NSSize(width: 20, height: 22)
+        let img = NSImage(size: totalSize, flipped: false) { rect in
+            // Draw mouse icon
+            if let baseIcon = NSImage(systemSymbolName: "computermouse.fill", accessibilityDescription: nil) {
+                let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+                let configured = baseIcon.withSymbolConfiguration(config) ?? baseIcon
+                let iconW: CGFloat = 14
+                let iconH: CGFloat = 17
+                let iconX = (rect.width - iconW) / 2
+                let iconRect = NSRect(x: iconX, y: 4, width: iconW, height: iconH)
+
+                // Tint the icon by drawing it with compositing
+                iconColor.setFill()
+                iconRect.fill(using: .sourceOver)
+                configured.draw(in: iconRect, from: .zero, operation: .destinationIn, fraction: 1.0)
+            }
+
+            // Draw 4 indicator dots at the bottom
+            let dotSize: CGFloat = 2.5
+            let dotSpacing: CGFloat = 1.5
+            let totalWidth = 4 * dotSize + 3 * dotSpacing
+            let startX = (rect.width - totalWidth) / 2
+
+            for (i, enabled) in states.enumerated() {
+                let x = startX + CGFloat(i) * (dotSize + dotSpacing)
+                let dotRect = NSRect(x: x, y: 0.5, width: dotSize, height: dotSize)
+                let color: NSColor = enabled ? .systemGreen : (isDark ? NSColor.white.withAlphaComponent(0.25) : NSColor.black.withAlphaComponent(0.2))
+                color.setFill()
+                NSBezierPath(ovalIn: dotRect).fill()
+            }
+
+            return true
+        }
+        img.isTemplate = false
+        button.image = img
     }
 
     // MARK: - Sleep/Wake
@@ -200,12 +267,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.scrollReverser.stopTaps()
                 self.scrollReverser.startTaps()
             }
-            if self.buttonRemapper.isEnabled {
-                let wasEnabled = self.buttonRemapper.isEnabled
-                self.buttonRemapper.isEnabled = false
-                self.buttonRemapper.isEnabled = wasEnabled
-            }
+            self.buttonRemapper.restart()
             self.capsLock.reapplyIfNeeded()
+            self.fnKey.reapplyIfNeeded()
         }
     }
 }

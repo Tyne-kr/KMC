@@ -66,6 +66,7 @@ final class ButtonRemapper: ObservableObject {
     /// The HID button to use as gesture trigger
     @Published var triggerButton: HIDButtonID? = nil {
         didSet {
+            guard !isLoading else { return }
             if let btn = triggerButton, let data = try? JSONEncoder().encode(btn) {
                 UserDefaults.standard.set(data, forKey: "ButtonRemapper.triggerButtonHID")
             }
@@ -79,19 +80,19 @@ final class ButtonRemapper: ObservableObject {
 
     /// Pixel threshold to trigger a space switch
     @Published var thresholdPixels: CGFloat = 150 {
-        didSet { UserDefaults.standard.set(Double(thresholdPixels), forKey: "ButtonRemapper.threshold") }
+        didSet { guard !isLoading else { return }; UserDefaults.standard.set(Double(thresholdPixels), forKey: "ButtonRemapper.threshold") }
     }
 
     /// Allow multiple switches in a single hold
     @Published var allowContinuousSwipe: Bool = false {
-        didSet { UserDefaults.standard.set(allowContinuousSwipe, forKey: "ButtonRemapper.continuousSwipe") }
+        didSet { guard !isLoading else { return }; UserDefaults.standard.set(allowContinuousSwipe, forKey: "ButtonRemapper.continuousSwipe") }
     }
 
     /// Invert swipe direction (natural vs standard)
     /// false = 마우스 이동 방향 = Space 이동 방향 (기본)
     /// true  = 마우스 이동 방향 반대 = Space 이동 방향 (자연스러운 스크롤 방식)
     @Published var invertDirection: Bool = false {
-        didSet { UserDefaults.standard.set(invertDirection, forKey: "ButtonRemapper.invertDirection") }
+        didSet { guard !isLoading else { return }; UserDefaults.standard.set(invertDirection, forKey: "ButtonRemapper.invertDirection") }
     }
 
     // MARK: - Button Detection Mode
@@ -115,11 +116,9 @@ final class ButtonRemapper: ObservableObject {
 
     // MARK: - Init
 
-    private init() {
-        loadSettings()
-    }
+    private var isLoading = true
 
-    private func loadSettings() {
+    private init() {
         let ud = UserDefaults.standard
         ud.register(defaults: [
             "ButtonRemapper.enabled": false,
@@ -128,19 +127,20 @@ final class ButtonRemapper: ObservableObject {
             "ButtonRemapper.invertDirection": false
         ])
 
-        // Load HID button ID
+        // Load without triggering didSet side effects
         if let data = ud.data(forKey: "ButtonRemapper.triggerButtonHID"),
            let btn = try? JSONDecoder().decode(HIDButtonID.self, from: data) {
             triggerButton = btn
         }
 
-        thresholdPixels = CGFloat(ud.double(forKey: "ButtonRemapper.threshold"))
-        if thresholdPixels == 0 { thresholdPixels = 150 }
+        let threshold = CGFloat(ud.double(forKey: "ButtonRemapper.threshold"))
+        thresholdPixels = threshold == 0 ? 150 : threshold
         allowContinuousSwipe = ud.bool(forKey: "ButtonRemapper.continuousSwipe")
         invertDirection = ud.bool(forKey: "ButtonRemapper.invertDirection")
 
-        let enabled = ud.bool(forKey: "ButtonRemapper.enabled")
-        if enabled {
+        isLoading = false
+
+        if ud.bool(forKey: "ButtonRemapper.enabled") {
             isEnabled = true
         }
     }
@@ -160,6 +160,13 @@ final class ButtonRemapper: ObservableObject {
         accumulatedDeltaX = 0
         triggerButtonPressed = false
         os_unfair_lock_unlock(&stateLock)
+    }
+
+    /// Restart without going through @Published (avoids redundant UserDefaults writes and view updates)
+    func restart() {
+        guard isEnabled else { return }
+        stop()
+        start()
     }
 
     // MARK: - IOHIDManager (button press/release detection)
