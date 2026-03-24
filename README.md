@@ -2,6 +2,16 @@
 
 macOS menu bar utility that combines scroll reversal, mouse gesture-based Space switching, and Caps Lock delay removal in a single lightweight app.
 
+## Why?
+
+Jc가 MacBook Pro에서 Logitech G309 게이밍 마우스를 사용하던 중 겪은 불편함에서 시작된 프로젝트입니다.
+
+- G309는 게이밍 마우스라 Logi Options+를 지원하지 않아 **스크롤 방향 반전**을 자체 설정할 수 없었고,
+- 트랙패드의 **전체 화면 앱 쓸어넘기기**를 마우스로 대체할 방법이 없었으며,
+- macOS의 **Caps Lock 한/영 전환 딜레이**가 빠른 타이핑을 방해했습니다.
+
+이 세 가지 문제를 해결하기 위해 별도 프로그램 3개를 설치하는 대신, 하나의 가벼운 메뉴바 앱으로 직접 만들었습니다.
+
 ## Features
 
 ### Scroll Reversal
