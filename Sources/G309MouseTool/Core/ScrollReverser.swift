@@ -1,9 +1,9 @@
 import Cocoa
 import CSPI
 
-// MARK: - Scroll Source Detection
+// MARK: - Enums (matching original MouseTap.h)
 
-enum ScrollSource {
+enum ScrollEventSource {
     case mouse
     case trackpad
 }
@@ -17,8 +17,8 @@ enum ScrollPhase {
 
 // MARK: - Scroll Reverser
 
-/// Core scroll reversal engine ported from Scroll Reverser (pilotmoon)
-/// Uses dual CGEventTap architecture: passive tap for gesture detection, active tap for scroll modification
+/// Core scroll reversal engine — faithful port of Scroll Reverser (pilotmoon) MouseTap.m
+/// Uses dual CGEventTap architecture with a SINGLE callback (matching original).
 final class ScrollReverser: ObservableObject {
 
     static let shared = ScrollReverser()
@@ -27,11 +27,7 @@ final class ScrollReverser: ObservableObject {
 
     @Published var isEnabled: Bool = false {
         didSet {
-            if isEnabled {
-                startTaps()
-            } else {
-                stopTaps()
-            }
+            if isEnabled { start() } else { stop() }
             UserDefaults.standard.set(isEnabled, forKey: "ScrollReverser.enabled")
         }
     }
@@ -56,20 +52,19 @@ final class ScrollReverser: ObservableObject {
 
     // MARK: - Tap State
 
-    private var activeTap: CFMachPort?
-    private var passiveTap: CFMachPort?
-    private var activeRunLoopSource: CFRunLoopSource?
-    private var passiveRunLoopSource: CFRunLoopSource?
+    private var activeTapPort: CFMachPort?
+    private var passiveTapPort: CFMachPort?
+    private var activeTapSource: CFRunLoopSource?
+    private var passiveTapSource: CFRunLoopSource?
 
-    // MARK: - Touch Tracking (from passive tap)
+    // MARK: - Touch Tracking (matching original MouseTap ivars)
 
-    private var lastTouchTime: TimeInterval = 0
-    private var lastTouchCount: Int = 0
-    private var lastSource: ScrollSource = .mouse
-
-    // Timing thresholds (empirically tuned, from Scroll Reverser)
-    private let touchThreshold: TimeInterval = 0.222  // 222ms
-    private let touchTimeout: TimeInterval = 0.333     // 333ms
+    /// Max finger count since last scroll event (reset to 0 after each scroll)
+    fileprivate var touching: Int = 0
+    /// Nanosecond timestamp of last multi-touch gesture
+    fileprivate var lastTouchTime: UInt64 = 0
+    /// Previous source determination (for carry-forward in ambiguous zone)
+    fileprivate var lastSource: ScrollEventSource = .mouse
 
     // MARK: - Init
 
@@ -86,7 +81,6 @@ final class ScrollReverser: ObservableObject {
             "ScrollReverser.discreteScrollStep": 3
         ])
 
-        // Set backing storage directly — no didSet side effects
         reverseMouseVertical = ud.bool(forKey: "ScrollReverser.reverseMouseVertical")
         reverseMouseHorizontal = ud.bool(forKey: "ScrollReverser.reverseMouseHorizontal")
         reverseTrackpadVertical = ud.bool(forKey: "ScrollReverser.reverseTrackpadVertical")
@@ -96,283 +90,253 @@ final class ScrollReverser: ObservableObject {
 
         isLoading = false
 
-        // Now enable with side effects
         if ud.bool(forKey: "ScrollReverser.enabled") {
             isEnabled = true
         }
     }
 
-    // MARK: - Event Tap Management
+    // MARK: - Tap Management (matching original start/stop/enableTap)
 
-    func startTaps() {
-        guard activeTap == nil else { return }
+    private func start() {
+        guard activeTapPort == nil else { return }
 
-        // Active tap: intercepts and modifies scroll wheel events
-        let activeEvents: CGEventMask = (1 << CGEventType.scrollWheel.rawValue)
+        // Clear state (matching original)
+        touching = 0
+        lastTouchTime = 0
+        lastSource = .mouse
 
-        activeTap = CGEvent.tapCreate(
-            tap: .cghidEventTap,
-            place: .tailAppendEventTap,
-            options: .defaultTap,
-            eventsOfInterest: activeEvents,
-            callback: scrollCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        )
-
-        // Passive tap: listens to gesture events for touch detection
-        let gestureEventMask: CGEventMask = (1 << 29) // NSEventTypeGesture = 29
-
-        passiveTap = CGEvent.tapCreate(
-            tap: .cghidEventTap,
+        // Passive tap: listens to gesture events for touch detection (trackpad)
+        // MUST be kCGSessionEventTap — gesture events are generated at session level
+        // Uses SAME callback as active tap (matching original architecture)
+        passiveTapPort = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
             place: .tailAppendEventTap,
             options: .listenOnly,
-            eventsOfInterest: gestureEventMask,
-            callback: gestureCallback,
+            eventsOfInterest: CGEventMask(1 << 29), // NSEventMaskGesture
+            callback: scrollReverserCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         )
 
-        if let activeTap = activeTap {
-            activeRunLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, activeTap, 0)
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), activeRunLoopSource, .commonModes)
-        }
+        // Active tap: modifies scroll events (requires Accessibility permission)
+        activeTapPort = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .tailAppendEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(1 << CGEventType.scrollWheel.rawValue),
+            callback: scrollReverserCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        )
 
-        if let passiveTap = passiveTap {
-            passiveRunLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, passiveTap, 0)
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), passiveRunLoopSource, .commonModes)
-        }
-    }
-
-    func stopTaps() {
-        if let source = activeRunLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
-            activeRunLoopSource = nil
-        }
-        if let source = passiveRunLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
-            passiveRunLoopSource = nil
-        }
-        if let tap = activeTap {
-            CFMachPortInvalidate(tap)
-            activeTap = nil
-        }
-        if let tap = passiveTap {
-            CFMachPortInvalidate(tap)
-            passiveTap = nil
-        }
-    }
-
-    func reEnableTaps() {
-        if let tap = activeTap {
-            CGEvent.tapEnable(tap: tap, enable: true)
-        }
-        if let tap = passiveTap {
-            CGEvent.tapEnable(tap: tap, enable: true)
-        }
-    }
-
-    // MARK: - Source Detection
-
-    func detectSource(for event: CGEvent) -> ScrollSource {
-        let isContinuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
-
-        // Non-continuous scrolling is always mouse (discrete wheel)
-        if !isContinuous {
-            lastSource = .mouse
-            return .mouse
-        }
-
-        let now = ProcessInfo.processInfo.systemUptime
-        let timeSinceTouch = now - lastTouchTime
-
-        // Recent multi-finger touch → trackpad
-        if lastTouchCount >= 2 && timeSinceTouch < touchThreshold {
-            lastSource = .trackpad
-            return .trackpad
-        }
-
-        // Determine momentum phase
-        let phase = momentumPhase(for: event)
-
-        // Normal phase with no recent touch → mouse (e.g., Magic Mouse)
-        if phase == .normal && timeSinceTouch > touchTimeout {
-            lastSource = .mouse
-            return .mouse
-        }
-
-        return lastSource
-    }
-
-    private func momentumPhase(for event: CGEvent) -> ScrollPhase {
-        let raw = event.getIntegerValueField(.scrollWheelEventMomentumPhase)
-        switch raw {
-        case 1: return .start       // NSTouchPhaseBegan
-        case 2: return .momentum    // NSTouchPhaseStationary (fingers lifted, momentum)
-        case 4: return .end         // NSTouchPhaseEnded
-        case 8: return .end         // NSTouchPhaseCancelled
-        default: return .normal
-        }
-    }
-
-    // MARK: - Scroll Reversal
-
-    func processScrollEvent(_ event: CGEvent) -> Unmanaged<CGEvent>? {
-        let source = detectSource(for: event)
-
-        let shouldReverseVertical: Bool
-        let shouldReverseHorizontal: Bool
-
-        switch source {
-        case .mouse:
-            shouldReverseVertical = reverseMouseVertical
-            shouldReverseHorizontal = reverseMouseHorizontal
-        case .trackpad:
-            shouldReverseVertical = reverseTrackpadVertical
-            shouldReverseHorizontal = reverseTrackpadHorizontal
-        }
-
-        guard shouldReverseVertical || shouldReverseHorizontal else {
-            return Unmanaged.passUnretained(event)
-        }
-
-        let isContinuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
-
-        // Calculate multipliers
-        let vStep: Int64
-        if !isContinuous {
-            let axis1 = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-            if abs(axis1) == 1 {
-                vStep = Int64(discreteScrollStep)
-            } else {
-                vStep = 1
-            }
+        if let passive = passiveTapPort, let active = activeTapPort {
+            passiveTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, passive, 0)
+            CFRunLoopAddSource(CFRunLoopGetMain(), passiveTapSource, .commonModes)
+            activeTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, active, 0)
+            CFRunLoopAddSource(CFRunLoopGetMain(), activeTapSource, .commonModes)
         } else {
-            vStep = 1
+            stop()
         }
+    }
 
-        let vMul: Int64 = shouldReverseVertical ? -vStep : vStep
-        let hMul: Int64 = shouldReverseHorizontal ? -1 : 1
+    func stop() {
+        if let source = activeTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            activeTapSource = nil
+        }
+        if let port = activeTapPort {
+            CFMachPortInvalidate(port)
+            activeTapPort = nil
+        }
+        if let source = passiveTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            passiveTapSource = nil
+        }
+        if let port = passiveTapPort {
+            CFMachPortInvalidate(port)
+            passiveTapPort = nil
+        }
+    }
 
-        // ===== READ all values BEFORE any modification =====
-        // (setting DeltaAxis causes macOS to recalculate PointDelta/FixedPtDelta)
-        // Matches original MouseTap.m: all reads first, all writes after
+    fileprivate func enableTap() {
+        if let port = activeTapPort, !CGEvent.tapIsEnabled(tap: port) {
+            CGEvent.tapEnable(tap: port, enable: true)
+        }
+        if let port = passiveTapPort, !CGEvent.tapIsEnabled(tap: port) {
+            CGEvent.tapEnable(tap: port, enable: true)
+        }
+    }
+}
 
-        // Integer deltas
-        let axis1 = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-        let axis2 = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
-        let point_axis1 = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
-        let point_axis2 = event.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)
+// MARK: - Nanosecond timer (matching original _nanoseconds())
 
-        // FixedPt uses Double (matches original CGEventGetDoubleValueField)
-        let fixedpt_axis1 = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
-        let fixedpt_axis2 = event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2)
+private func nanoseconds() -> UInt64 {
+    var info = mach_timebase_info_data_t()
+    mach_timebase_info(&info)
+    var time = mach_absolute_time()
+    time *= UInt64(info.numer)
+    time /= UInt64(info.denom)
+    return time
+}
 
-        // IOHID float values (read before write, alongside everything else)
-        let hidEvent = CGEventCopyIOHIDEvent(event)
+// MARK: - Momentum phase (matching original _momentumPhaseForEvent)
+
+private func momentumPhase(for event: CGEvent) -> ScrollPhase {
+    guard let nsEvent = NSEvent(cgEvent: event) else { return .normal }
+    // CRITICAL: The original uses NSTouchPhase* constants to switch on momentumPhase.
+    // NSTouchPhaseStationary = 1<<2 = 4, which matches NSEvent.Phase.changed (rawValue 4).
+    // Swift's NSEvent.Phase.stationary has rawValue 2 — NOT the same!
+    // So we must use .changed (4) to match momentum continuation events.
+    switch nsEvent.momentumPhase {
+    case .began:      return .start      // rawValue 1: momentum began
+    case .changed:    return .momentum   // rawValue 4: momentum continuing (original: NSTouchPhaseStationary=4)
+    case .ended:      return .end        // rawValue 8: momentum ended
+    case .cancelled:  return .end        // rawValue 16: momentum cancelled
+    default:          return .normal     // rawValue 0: no momentum (gesture phase active)
+    }
+}
+
+// MARK: - Single Callback (matching original _callback exactly)
+
+private let MILLISECOND: UInt64 = 1_000_000
+
+private func scrollReverserCallback(
+    proxy: CGEventTapProxy,
+    type: CGEventType,
+    eventRef: CGEvent,
+    userInfo: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    guard let userInfo = userInfo else { return Unmanaged.passUnretained(eventRef) }
+    let tap = Unmanaged<ScrollReverser>.fromOpaque(userInfo).takeUnretainedValue()
+    let time = nanoseconds()
+
+    // === NSEventTypeGesture (type 29) — touch tracking ===
+    if type.rawValue == 29 {
+        guard let event = NSEvent(cgEvent: eventRef) else { return Unmanaged.passUnretained(eventRef) }
+
+        // Matching original: touchesMatchingPhase:NSTouchPhaseTouching inView:nil
+        let touchingCount = event.touches(matching: .touching, in: nil).count
+
+        if touchingCount >= 2 {
+            tap.lastTouchTime = time
+            tap.touching = max(tap.touching, touchingCount)  // MAX, matching original
+        }
+        // else: totally ignore zero or one touch events (matching original)
+
+        return Unmanaged.passUnretained(eventRef)
+    }
+
+    // === NSEventTypeScrollWheel ===
+    if type == .scrollWheel {
+        let ioHidEventRef = CGEventCopyIOHIDEvent(eventRef)
+
+        // Is continuous? (trackpad/Magic Mouse scrolling is continuous)
+        let continuous = eventRef.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
+
+        // READ all deltas before any writes (matching original read order)
+        let axis1 = eventRef.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        let axis2 = eventRef.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+        let point_axis1 = eventRef.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+        let point_axis2 = eventRef.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)
+        let fixedpt_axis1 = eventRef.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+        let fixedpt_axis2 = eventRef.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2)
         var iohid_axis1: IOHIDFloat = 0
         var iohid_axis2: IOHIDFloat = 0
-        if let hid = hidEvent {
+        if let hid = ioHidEventRef {
             iohid_axis1 = IOHIDEventGetFloatValue(hid, UInt32(kIOHIDEventFieldScrollY))
             iohid_axis2 = IOHIDEventGetFloatValue(hid, UInt32(kIOHIDEventFieldScrollX))
         }
 
-        // ===== WRITE values back =====
-        // Order: Delta first (triggers recalc), FixedPt second, Point last
-        // This matches original MouseTap.m comment:
-        // "point value must be set last to preserve smooth scrolling"
+        // Calculate elapsed time since touch (matching original)
+        let touchElapsed = time - tap.lastTouchTime
 
-        if shouldReverseVertical {
-            // 1. DeltaAxis (triggers internal recalculation)
-            event.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: axis1 * vMul)
+        // Get and RESET fingers touching (matching original: tap->touching=0)
+        let touching = tap.touching
+        tap.touching = 0
 
-            if isContinuous || abs(axis1) != 1 {
-                // 2. FixedPtDelta (Double)
-                event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: fixedpt_axis1 * Double(vMul))
-                // 3. PointDelta (set LAST — overrides macOS recalculation)
-                event.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: point_axis1 * vMul)
+        // Get momentum phase
+        let phase = momentumPhase(for: eventRef)
+
+        // Work out the event source (matching original block exactly)
+        let lastSource = tap.lastSource
+        let source: ScrollEventSource = {
+            if !continuous {
+                return .mouse  // assume anything not-continuous is a mouse
             }
+            if touching >= 2 && touchElapsed < (MILLISECOND * 222) {
+                return .trackpad
+            }
+            if phase == .normal && touchElapsed > (MILLISECOND * 333) {
+                return .mouse
+            }
+            // not enough information to decide. assume the same as last time.
+            return tap.lastSource
+        }()
+        tap.lastSource = source
 
-            // 4. IOHID
-            if let hid = hidEvent {
-                IOHIDEventSetFloatValue(hid, UInt32(kIOHIDEventFieldScrollY), iohid_axis1 * IOHIDFloat(vMul))
+        // Should we reverse? (matching original invert logic)
+        let shouldReverse: Bool = {
+            switch source {
+            case .trackpad:
+                return tap.reverseTrackpadVertical || tap.reverseTrackpadHorizontal
+            case .mouse:
+                return tap.reverseMouseVertical || tap.reverseMouseHorizontal
+            }
+        }()
+
+        guard shouldReverse else {
+            if let hid = ioHidEventRef { IOHIDEventSafeRelease(hid) }
+            return Unmanaged.passUnretained(eventRef)
+        }
+
+        // Calculate multipliers (matching original vmul/hmul logic)
+        let stepsize = Int64(tap.discreteScrollStep)
+        let discreteAdjust = stepsize > 0 && llabs(axis1) == 1 && !continuous
+        let vstep: Int64 = discreteAdjust ? stepsize : 1
+
+        let reverseV: Bool
+        let reverseH: Bool
+        switch source {
+        case .trackpad:
+            reverseV = tap.reverseTrackpadVertical
+            reverseH = tap.reverseTrackpadHorizontal
+        case .mouse:
+            reverseV = tap.reverseMouseVertical
+            reverseH = tap.reverseMouseHorizontal
+        }
+
+        let vmul: Int64 = reverseV ? -vstep : vstep
+        let hmul: Int64 = reverseH ? -1 : 1
+
+        // WRITE values (matching original order: Delta first, then FixedPt+Point+IOHID)
+        // Vertical
+        if discreteAdjust || vmul != 1 {
+            eventRef.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: axis1 * vmul)
+        }
+        if !discreteAdjust && vmul != 1 {
+            eventRef.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: fixedpt_axis1 * Double(vmul))
+            eventRef.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: point_axis1 * vmul)
+            if let hid = ioHidEventRef {
+                IOHIDEventSetFloatValue(hid, UInt32(kIOHIDEventFieldScrollY), iohid_axis1 * IOHIDFloat(vmul))
             }
         }
 
-        if shouldReverseHorizontal {
-            event.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: axis2 * hMul)
-            event.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: fixedpt_axis2 * Double(hMul))
-            event.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: point_axis2 * hMul)
-
-            if let hid = hidEvent {
-                IOHIDEventSetFloatValue(hid, UInt32(kIOHIDEventFieldScrollX), iohid_axis2 * IOHIDFloat(hMul))
+        // Horizontal
+        if hmul != 1 {
+            eventRef.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: axis2 * hmul)
+            eventRef.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: fixedpt_axis2 * Double(hmul))
+            eventRef.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: point_axis2 * hmul)
+            if let hid = ioHidEventRef {
+                IOHIDEventSetFloatValue(hid, UInt32(kIOHIDEventFieldScrollX), iohid_axis2 * IOHIDFloat(hmul))
             }
         }
 
-        // Release IOHIDEvent (CF type returned by CGEventCopyIOHIDEvent)
-        if let hid = hidEvent {
+        if let hid = ioHidEventRef {
             IOHIDEventSafeRelease(hid)
         }
 
-        return Unmanaged.passUnretained(event)
+        return Unmanaged.passUnretained(eventRef)
     }
 
-    // MARK: - Touch Tracking
-
-    func updateTouchInfo(from event: NSEvent) {
-        let touches = event.allTouches()
-        let activeTouches = touches.filter { $0.phase == .touching }
-        let count = activeTouches.count
-
-        if count >= 2 {
-            lastTouchCount = count
-            lastTouchTime = ProcessInfo.processInfo.systemUptime
-        } else if count == 0 {
-            // Don't reset lastTouchTime—we use it for timeout detection
-        }
-    }
-}
-
-// MARK: - C Callback Functions
-
-private func scrollCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    guard let userInfo = userInfo else { return Unmanaged.passUnretained(event) }
-    let reverser = Unmanaged<ScrollReverser>.fromOpaque(userInfo).takeUnretainedValue()
-
-    // Re-enable tap if it was disabled by the system
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        reverser.reEnableTaps()
-        return Unmanaged.passUnretained(event)
-    }
-
-    guard type == .scrollWheel else {
-        return Unmanaged.passUnretained(event)
-    }
-
-    return reverser.processScrollEvent(event)
-}
-
-private func gestureCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    guard let userInfo = userInfo else { return Unmanaged.passUnretained(event) }
-    let reverser = Unmanaged<ScrollReverser>.fromOpaque(userInfo).takeUnretainedValue()
-
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        reverser.reEnableTaps()
-        return Unmanaged.passUnretained(event)
-    }
-
-    // Convert CGEvent to NSEvent to access touch data
-    if let nsEvent = NSEvent(cgEvent: event) {
-        reverser.updateTouchInfo(from: nsEvent)
-    }
-
-    return Unmanaged.passUnretained(event)
+    // Other event type — re-enable tap if it was disabled
+    tap.enableTap()
+    return Unmanaged.passUnretained(eventRef)
 }

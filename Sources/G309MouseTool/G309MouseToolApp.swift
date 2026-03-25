@@ -264,8 +264,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self = self else { return }
             if self.scrollReverser.isEnabled {
-                self.scrollReverser.stopTaps()
-                self.scrollReverser.startTaps()
+                self.scrollReverser.stop()
+                self.scrollReverser.isEnabled = true
             }
             self.buttonRemapper.restart()
             self.capsLock.reapplyIfNeeded()
