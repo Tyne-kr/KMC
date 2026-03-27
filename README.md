@@ -95,10 +95,21 @@ The built app will be at `build/KMC_v{VERSION}.app`.
 | Caps Lock Fix | `hidutil` UserKeyMapping + `defaults write` symbolic hotkeys |
 | F1~F12 Keys | CGEventTap (NX_SYSDEFINED interception) + async CGEvent posting with `hidSystemState` source |
 
-## Credits
+## Acknowledgements
 
-- Scroll reversal based on [Scroll Reverser](https://github.com/pilotmoon/Scroll-Reverser) by Nick Moore (Apache 2.0)
-- DockSwipe event structure based on [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix) by Noah Nuebling
+This project would not have been possible without the incredible work of the open source community.
+
+### [Scroll Reverser](https://github.com/pilotmoon/Scroll-Reverser) by [@pilotmoon](https://github.com/pilotmoon) (Nick Moore)
+
+A heartfelt and sincere thank you to Nick Moore for creating and open-sourcing Scroll Reverser. Your elegant implementation of dual CGEventTap architecture — with its precise mouse/trackpad source detection, touch-count tracking, and careful event field ordering — became the foundation upon which KMC was built. Without your meticulous work on scroll event handling, this project simply would not exist. Your code taught us how macOS processes scroll events at the deepest level, and that understanding inspired us to build additional features far beyond scroll reversal — including Space switching via synthetic DockSwipe events and media key interception for F-key restoration. We are deeply grateful for your generosity in sharing this work with the community under the Apache 2.0 license.
+
+### [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix) by [@noah-nuebling](https://github.com/noah-nuebling) (Noah Nuebling)
+
+Sincere thanks to Noah Nuebling for the extraordinary reverse engineering work on macOS gesture internals. The synthetic DockSwipe event structure — with its undocumented CGEvent fields, phase sequences, and stuck-bug workarounds — was instrumental in implementing native Space switching with the same fluid animation as a real trackpad swipe. Your dedication to documenting these internals made it possible for others to build upon them.
+
+### [Karabiner-Elements](https://github.com/pqrs-org/Karabiner-Elements) by [@tekezo](https://github.com/tekezo)
+
+Thanks to tekezo for the Karabiner-Elements project, which served as the definitive reference for macOS HID device classification — particularly the internal keyboard detection approach using `kIOHIDBuiltInKey`, transport type, and product name matching that enabled KMC to correctly distinguish between built-in and external keyboards.
 
 ## License
 
