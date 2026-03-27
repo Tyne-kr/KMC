@@ -327,7 +327,7 @@ struct SettingsView: View {
 
     private var footerSection: some View {
         HStack {
-            Text("KMC v1.9.3 by Jc")
+            Text("KMC v1.9.6 by Jc")
                 .font(.system(size: 10))
                 .foregroundColor(.ghTextTer)
 
