@@ -41,6 +41,7 @@ Instead of installing four separate utilities, Jc built a single lightweight men
 ### 2. Space Switching Gesture
 - Hold a configurable mouse button + move left/right to switch between fullscreen apps / Spaces
 - Uses synthetic DockSwipe events for native macOS animation
+- **macOS 27 support (v2.0.1):** macOS 27 stopped reading the legacy DockSwipe event fields, which silently broke Space switching. On macOS 27+ KMC attaches the gesture as an IOHIDEvent payload instead (legacy encoding kept for macOS 26 and earlier)
 - Adjustable movement threshold (50-500px)
 - Direction inversion option (natural / standard)
 - Continuous swipe support (multiple switches in a single hold)
@@ -119,7 +120,7 @@ A heartfelt and sincere thank you to Nick Moore for creating and open-sourcing S
 
 ### [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix) by [@noah-nuebling](https://github.com/noah-nuebling) (Noah Nuebling)
 
-Sincere thanks to Noah Nuebling for the extraordinary reverse engineering work on macOS gesture internals. The synthetic DockSwipe event structure — with its undocumented CGEvent fields, phase sequences, and stuck-bug workarounds — was instrumental in implementing native Space switching with the same fluid animation as a real trackpad swipe. Your dedication to documenting these internals made it possible for others to build upon them.
+Sincere thanks to Noah Nuebling for the extraordinary reverse engineering work on macOS gesture internals. The synthetic DockSwipe event structure — with its undocumented CGEvent fields, phase sequences, and stuck-bug workarounds — was instrumental in implementing native Space switching with the same fluid animation as a real trackpad swipe. Your dedication to documenting these internals made it possible for others to build upon them. KMC's macOS 27 support follows your discovery that DockSwipes now travel as an attached IOHIDEvent (commit `f92d2d53a`), with the `SLEventSetIOHIDEvent` setter and the progress/velocity sign normalization from the community pull requests #1936 and #2077 (@timmyagentic).
 
 ### [Karabiner-Elements](https://github.com/pqrs-org/Karabiner-Elements) by [@tekezo](https://github.com/tekezo)
 

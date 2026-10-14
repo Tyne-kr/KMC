@@ -1,11 +1,18 @@
 import Cocoa
+import CSPI
 import os
 
 /// Executes macOS actions in response to mouse gestures.
 /// Uses synthetic DockSwipe events (reverse-engineered from macOS internals)
 /// to trigger native Space switching with the same animation as a three-finger trackpad swipe.
 ///
-/// Reference: Mac Mouse Fix (noah-nuebling/mac-mouse-fix) TouchSimulator.m
+/// Two encodings, chosen by OS version:
+/// - macOS ≤ 26: undocumented CGEvent fields (legacy path below).
+/// - macOS 27+:  an IOHIDEvent payload attached to the CGEvent. macOS 27 ignores the
+///   legacy fields entirely (A/B verified on 27.0.1: legacy = no Space change, payload = switch).
+///
+/// Reference: Mac Mouse Fix (noah-nuebling/mac-mouse-fix) TouchSimulator.m,
+/// macOS 27 fix f92d2d53a, PR #1936 / #2077 (progress + velocity sign normalization).
 enum ActionExecutor {
 
     // MARK: - Pre-computed CGEventField constants (undocumented fields)
@@ -45,6 +52,24 @@ enum ActionExecutor {
         memcpy(&f, &typeVal, 4)
         return Double(f)
     }()
+
+    // MARK: - Encoding selection
+
+    static let usesHIDPayload: Bool = {
+        if #available(macOS 27, *) { return true }
+        return false
+    }()
+
+    /// One-line summary for the launch log (lets a captured stderr confirm the active path).
+    static var diagnosticDescription: String {
+        guard usesHIDPayload else { return "legacy CGEvent fields (macOS ≤ 26)" }
+        return KMCDockSwipeHIDPathAvailable()
+            ? "IOHIDEvent payload (macOS 27+), SLEventSetIOHIDEvent resolved"
+            : "IOHIDEvent payload (macOS 27+) — SLEventSetIOHIDEvent MISSING, Space switching disabled"
+    }
+
+    /// Touched only on swipeQueue.
+    private static var didLogHIDFailure = false
 
     // MARK: - Public API
 
@@ -106,6 +131,11 @@ enum ActionExecutor {
     // MARK: - DockSwipe Event Posting
 
     private static func postDockSwipeEvent(phase: Int64, originOffset: Double, type: Int64) {
+        if usesHIDPayload {
+            postDockSwipeEventHID(phase: phase, originOffset: originOffset, type: type)
+            return
+        }
+
         // Validate that undocumented fields are available
         guard let fEventType = fieldEventType, let fSubtype = fieldSubtype,
               let fPhase = fieldPhase, let fPhaseDup = fieldPhaseDup,
@@ -149,5 +179,27 @@ enum ActionExecutor {
 
         e30.post(tap: .cgSessionEventTap)
         e29.post(tap: .cgSessionEventTap)
+    }
+
+    /// macOS 27+ encoding. Same phases/offsets as the legacy path, carried in an
+    /// IOHIDEvent payload; no type-29 companion event (unused on macOS 27).
+    private static func postDockSwipeEventHID(phase: Int64, originOffset: Double, type: Int64) {
+        // The legacy path always flagged invertedFromDevice (field 136 = 1). The payload has
+        // no such flag — the system applies the direction itself — so progress AND exit
+        // velocity are negated together: this keeps the legacy on-screen direction, and
+        // negating only progress makes the release velocity point backwards (end-of-swipe
+        // rebound). Mirrors MMF f92d2d53a + PR #1936/#2077 for invertedFromDevice = true.
+        let progress = -originOffset
+        let velocity = (phase == kPhaseEnded) ? -(originOffset * 100.0) : 0.0
+
+        guard let event = KMCCreateDockSwipeHIDEvent(UInt32(type), UInt16(phase), progress, velocity) else {
+            // Fail closed: the legacy fields are known to do nothing on macOS 27.
+            if !didLogHIDFailure {
+                didLogHIDFailure = true
+                fputs("[DockSwipe] ERROR: macOS 27 payload unavailable (\(diagnosticDescription))\n", stderr)
+            }
+            return
+        }
+        event.post(tap: .cgSessionEventTap)
     }
 }

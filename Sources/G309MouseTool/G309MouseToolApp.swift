@@ -45,17 +45,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Permissions missing at launch: each manager's start() fails and
         // auto-reverts its runtime toggle WITHOUT persisting — the user's
-        // saved preferences survive and restore on the next launch after
-        // permissions are granted. (Force-writing false here used to wipe them.)
+        // saved preferences survive, and resumeSavedFeatures() turns them
+        // back on as soon as permissions are granted (no relaunch needed).
+        // (Force-writing false here used to wipe them.)
 
         // Apply CapsLock delay removal if enabled
         capsLock.reapplyIfNeeded()
 
         // Observe all feature toggles to update status icon dots
         observeFeatureStates()
+        observePermissionGrant()
         updateStatusIcon()
 
         fputs("[KMC] Launched. AX=\(permissions.accessibilityEnabled) IM=\(permissions.inputMonitoringEnabled)\n", stderr)
+        fputs("[KMC] DockSwipe: \(ActionExecutor.diagnosticDescription)\n", stderr)
     }
 
     // MARK: - Status Bar
@@ -215,6 +218,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buttonRemapper.$isEnabled.receive(on: q).sink { [weak self] _ in self?.updateStatusIcon() }.store(in: &cancellables)
         capsLock.$isEnabled.receive(on: q).sink { [weak self] _ in self?.updateStatusIcon() }.store(in: &cancellables)
         fnKey.$useStandardFnKeys.receive(on: q).sink { [weak self] _ in self?.updateStatusIcon() }.store(in: &cancellables)
+    }
+
+    /// Every rebuild changes the ad-hoc signature, so macOS drops the permission
+    /// grants and features auto-revert at launch (saved preferences untouched).
+    /// Once both permissions are granted again, resume whatever the user had on.
+    private func observePermissionGrant() {
+        permissions.$accessibilityEnabled
+            .combineLatest(permissions.$inputMonitoringEnabled)
+            .map { $0 && $1 }
+            .removeDuplicates()
+            .filter { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.resumeSavedFeatures() }
+            .store(in: &cancellables)
+    }
+
+    /// Idempotent: only turns on features that are saved ON but currently off.
+    /// A start that still fails just auto-reverts again (runtime only).
+    private func resumeSavedFeatures() {
+        let ud = UserDefaults.standard
+        var resumed: [String] = []
+        if ud.bool(forKey: "ScrollReverser.enabled") && !scrollReverser.isEnabled {
+            scrollReverser.isEnabled = true
+            resumed.append("scroll")
+        }
+        if ud.bool(forKey: "ButtonRemapper.enabled") && !buttonRemapper.isEnabled {
+            buttonRemapper.isEnabled = true
+            resumed.append("gesture")
+        }
+        if ud.bool(forKey: "FnKey.useStandard") && !fnKey.useStandardFnKeys {
+            fnKey.useStandardFnKeys = true
+            resumed.append("fnkey")
+        }
+        if !resumed.isEmpty {
+            fputs("[KMC] Permissions granted — resumed saved features: \(resumed.joined(separator: ", "))\n", stderr)
+        }
     }
 
     private func updateStatusIcon() {
