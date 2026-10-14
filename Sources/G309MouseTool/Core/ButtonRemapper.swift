@@ -50,10 +50,28 @@ final class ButtonRemapper: ObservableObject {
 
     // MARK: - Published State
 
+    /// Runtime-only auto-off marker — see ScrollReverser.isAutoReverting.
+    private var isAutoReverting = false
+
     @Published var isEnabled: Bool = false {
         didSet {
+            if isAutoReverting {
+                isAutoReverting = false
+                stop()  // clean partial state; saved preference untouched
+                return
+            }
             if isEnabled {
                 start()
+                // Tap or HID manager failed (permissions missing) — revert so
+                // the UI doesn't show ON with a dead pipeline.
+                if eventTap == nil || hidManager == nil {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.isEnabled,
+                              self.eventTap == nil || self.hidManager == nil else { return }
+                        self.isAutoReverting = true
+                        self.isEnabled = false
+                    }
+                }
             } else {
                 stop()
             }
@@ -102,7 +120,9 @@ final class ButtonRemapper: ObservableObject {
 
     // MARK: - Internal State (protected by stateLock)
 
-    private var stateLock = os_unfair_lock()
+    // OSAllocatedUnfairLock (macOS 13+): safe allocation semantics — the old
+    // `os_unfair_lock` stored-property + & pattern is UB-prone in Swift.
+    private let stateLock = OSAllocatedUnfairLock()
     private var state: GestureState = .idle
     private var accumulatedDeltaX: CGFloat = 0
     private var triggerButtonPressed: Bool = false
@@ -155,11 +175,16 @@ final class ButtonRemapper: ObservableObject {
     private func stop() {
         stopHIDMonitoring()
         stopMouseMovementTap()
-        os_unfair_lock_lock(&stateLock)
+        stateLock.lock()
         state = .idle
         accumulatedDeltaX = 0
         triggerButtonPressed = false
-        os_unfair_lock_unlock(&stateLock)
+        stateLock.unlock()
+        // Stale detection mode must not survive an OFF→ON cycle — it would
+        // silently capture the next button press as the new trigger.
+        if isDetecting {
+            DispatchQueue.main.async { [weak self] in self?.isDetecting = false }
+        }
     }
 
     /// Restart without going through @Published (avoids redundant UserDefaults writes and view updates)
@@ -190,21 +215,41 @@ final class ButtonRemapper: ObservableObject {
         ]
 
         IOHIDManagerSetDeviceMatchingMultiple(manager, matchingDicts as CFArray)
-        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.commonModes.rawValue)
+        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
 
         let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         if openResult != kIOReturnSuccess {
-            fputs("[ButtonRemapper] HID Manager open failed: \(openResult)\n", stderr)
+            fputs("[ButtonRemapper] HID Manager open failed: \(openResult) — Input Monitoring 권한 확인 필요\n", stderr)
+            IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+            hidManager = nil
             return
         }
 
         let context = Unmanaged.passUnretained(self).toOpaque()
         IOHIDManagerRegisterInputValueCallback(manager, hidValueCallback, context)
+
+        // Trigger button held while the mouse disconnects (battery death,
+        // wireless sleep) never sends a release — reset gesture state so
+        // every subsequent pointer move doesn't fire Space switches.
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, { context, _, _, _ in
+            guard let context = context else { return }
+            let remapper = Unmanaged<ButtonRemapper>.fromOpaque(context).takeUnretainedValue()
+            remapper.resetGestureState()
+            fputs("[ButtonRemapper] Device removed — gesture state reset\n", stderr)
+        }, context)
+    }
+
+    fileprivate func resetGestureState() {
+        stateLock.lock()
+        state = .idle
+        accumulatedDeltaX = 0
+        triggerButtonPressed = false
+        stateLock.unlock()
     }
 
     private func stopHIDMonitoring() {
         if let manager = hidManager {
-            IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.commonModes.rawValue)
+            IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
             IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
             hidManager = nil
         }
@@ -236,12 +281,12 @@ final class ButtonRemapper: ObservableObject {
         }
 
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
     }
 
     private func stopMouseMovementTap() {
         if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
             runLoopSource = nil
         }
         if let tap = eventTap {
@@ -276,6 +321,9 @@ final class ButtonRemapper: ObservableObject {
             if usagePage == UInt32(kHIDPage_Button) && (usage == 1 || usage == 2) {
                 return  // Skip left click (1) and right click (2)
             }
+            if usagePage == UInt32(kHIDPage_Consumer) && usage == 0x238 {
+                return  // Skip AC Pan (tilt-wheel scroll) — fires on every tilt notch
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.detectedButton = buttonID
                 self?.isDetecting = false
@@ -286,7 +334,7 @@ final class ButtonRemapper: ObservableObject {
         // Trigger button handling
         guard let trigger = triggerButton, buttonID == trigger else { return }
 
-        os_unfair_lock_lock(&stateLock)
+        stateLock.lock()
         if isPressed {
             triggerButtonPressed = true
             state = .triggered
@@ -298,7 +346,7 @@ final class ButtonRemapper: ObservableObject {
             accumulatedDeltaX = 0
             fputs("[ButtonRemapper] Trigger button RELEASED\n", stderr)
         }
-        os_unfair_lock_unlock(&stateLock)
+        stateLock.unlock()
     }
 
     // MARK: - Mouse Movement Processing
@@ -306,10 +354,10 @@ final class ButtonRemapper: ObservableObject {
     func handleMouseMovement(deltaX: CGFloat) {
         var actionToFire: GestureAction? = nil
 
-        os_unfair_lock_lock(&stateLock)
+        stateLock.lock()
 
         guard triggerButtonPressed && (state == .triggered || state == .actionFired) else {
-            os_unfair_lock_unlock(&stateLock)
+            stateLock.unlock()
             return
         }
 
@@ -331,11 +379,11 @@ final class ButtonRemapper: ObservableObject {
             }
         }
 
-        os_unfair_lock_unlock(&stateLock)
+        stateLock.unlock()
 
         // Fire action outside the lock to avoid race window
         if let action = actionToFire {
-            fputs("[ButtonRemapper] Threshold crossed! deltaX=\(accumulatedDeltaX) action=\(action)\n", stderr)
+            fputs("[ButtonRemapper] Threshold crossed! action=\(action)\n", stderr)
             ActionExecutor.executeSpaceSwitch(direction: action)
         }
     }

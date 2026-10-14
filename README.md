@@ -77,7 +77,21 @@ No Xcode required. Uses Swift Package Manager:
 bash build-app.sh
 ```
 
-The built app will be at `build/KMC_v{VERSION}.app`.
+The built app will be at `build/KMC_v{VERSION}.app` (a release zip is generated alongside it).
+
+## Test
+
+Value-based regression tests guard the enum/keycode assumptions the event
+pipeline depends on (e.g. the `NSTouchPhaseStationary(4)` ≠ `NSEvent.Phase.stationary(2)`
+trap that caused the v1.9.3 trackpad misdetection):
+
+```bash
+swift test
+```
+
+> Note: the app is ad-hoc signed, so macOS may ask you to re-grant
+> Accessibility / Input Monitoring after each rebuild. Saved feature
+> preferences survive permission resets and restore on the next launch.
 
 ## Install
 

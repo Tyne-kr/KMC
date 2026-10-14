@@ -38,15 +38,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
         registerForSleepWake()
+        registerForThemeChange()
 
         // Silent permission check — NO dialogs
         permissions.checkState()
 
-        // If permissions are missing, features stay disabled
-        if !permissions.hasAllPermissions {
-            scrollReverser.isEnabled = false
-            buttonRemapper.isEnabled = false
-        }
+        // Permissions missing at launch: each manager's start() fails and
+        // auto-reverts its runtime toggle WITHOUT persisting — the user's
+        // saved preferences survive and restore on the next launch after
+        // permissions are granted. (Force-writing false here used to wipe them.)
 
         // Apply CapsLock delay removal if enabled
         capsLock.reapplyIfNeeded()
@@ -91,6 +91,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let event = NSApp.currentEvent else { return }
 
         if event.type == .rightMouseUp {
+            // Same permission guard as the menu path — enabling without
+            // permissions would create a dead tap.
+            if !scrollReverser.isEnabled && !permissions.hasAllPermissions {
+                openSettings()
+                return
+            }
             scrollReverser.isEnabled.toggle()
             updateStatusIcon()
         } else {
@@ -118,6 +124,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         remapItem.state = buttonRemapper.isEnabled ? .on : .off
         remapItem.target = self
         menu.addItem(remapItem)
+
+        let fnKeyItem = NSMenuItem(
+            title: "F1~F12 표준 기능키",
+            action: #selector(toggleFnKeys),
+            keyEquivalent: ""
+        )
+        fnKeyItem.state = fnKey.useStandardFnKeys ? .on : .off
+        fnKeyItem.target = self
+        menu.addItem(fnKeyItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -158,6 +173,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         buttonRemapper.isEnabled.toggle()
+    }
+
+    @objc private func toggleFnKeys() {
+        if !fnKey.useStandardFnKeys && !permissions.hasAllPermissions {
+            openSettings()
+            return
+        }
+        fnKey.useStandardFnKeys.toggle()
     }
 
     @objc func openSettings() {
@@ -249,6 +272,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image = img
     }
 
+    // MARK: - Theme Change
+
+    /// The status icon bakes the menu bar color into a non-template image
+    /// (needed for the colored feature dots) — so it must be redrawn when
+    /// the system switches between light and dark.
+    private func registerForThemeChange() {
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // Small delay lets effectiveAppearance settle before redrawing.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self?.updateStatusIcon()
+            }
+        }
+    }
+
     // MARK: - Sleep/Wake
 
     private func registerForSleepWake() {
@@ -269,7 +310,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             self.buttonRemapper.restart()
             self.capsLock.reapplyIfNeeded()
-            self.fnKey.reapplyIfNeeded()
+            // Full restart (not just re-enable) — matches the recovery
+            // strength of the other managers after wake.
+            self.fnKey.restart()
         }
     }
 }

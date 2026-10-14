@@ -25,11 +25,42 @@ final class ScrollReverser: ObservableObject {
 
     // MARK: - Published State
 
+    /// Runtime-only auto-off marker: a failed start() reverts the toggle
+    /// WITHOUT persisting, so a transient failure (TCC reset after re-sign,
+    /// wake race) never erases the user's saved preference.
+    private var isAutoReverting = false
+
     @Published var isEnabled: Bool = false {
         didSet {
-            if isEnabled { start() } else { stop() }
+            if isAutoReverting {
+                isAutoReverting = false
+                stop()  // clean partial state; saved preference untouched
+                return
+            }
+            if isEnabled {
+                start()
+                // Matching original isActive semantics: if the taps failed to start
+                // (e.g. Accessibility permission missing), don't stay in a
+                // "shown ON but dead" state. Async so this didSet completes first.
+                if !isActive {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.isEnabled, !self.isActive else { return }
+                        self.isAutoReverting = true
+                        self.isEnabled = false
+                    }
+                }
+            } else {
+                stop()
+            }
             UserDefaults.standard.set(isEnabled, forKey: "ScrollReverser.enabled")
         }
+    }
+
+    /// Matching original MouseTap.m isActive: state derived from port existence,
+    /// not from the flag. (MouseTap.m L267-270)
+    var isActive: Bool {
+        activeTapPort != nil && passiveTapPort != nil
+            && activeTapSource != nil && passiveTapSource != nil
     }
 
     // MARK: - Settings
@@ -85,8 +116,12 @@ final class ScrollReverser: ObservableObject {
         reverseMouseHorizontal = ud.bool(forKey: "ScrollReverser.reverseMouseHorizontal")
         reverseTrackpadVertical = ud.bool(forKey: "ScrollReverser.reverseTrackpadVertical")
         reverseTrackpadHorizontal = ud.bool(forKey: "ScrollReverser.reverseTrackpadHorizontal")
+        // NOTE (documented divergence #3): original _stepsize() clamps to [0,100]
+        // where 0 disables discrete adjust (MouseTap.m L46-52). KMC's settings
+        // model has no 0-disable (slider is 1-10), so 0 falls back to the default
+        // 3 and negatives clamp to 1. Intended — do not "fix" without a decision.
         let step = Int32(ud.integer(forKey: "ScrollReverser.discreteScrollStep"))
-        discreteScrollStep = step == 0 ? 3 : step
+        discreteScrollStep = step == 0 ? 3 : min(max(step, 1), 100)
 
         isLoading = false
 
@@ -168,12 +203,17 @@ final class ScrollReverser: ObservableObject {
 
 // MARK: - Nanosecond timer (matching original _nanoseconds())
 
-private func nanoseconds() -> UInt64 {
+/// Timebase cached once, matching the original's static caching (MouseTap.m L33-36).
+private let cachedTimebaseInfo: mach_timebase_info_data_t = {
     var info = mach_timebase_info_data_t()
     mach_timebase_info(&info)
+    return info
+}()
+
+private func nanoseconds() -> UInt64 {
     var time = mach_absolute_time()
-    time *= UInt64(info.numer)
-    time /= UInt64(info.denom)
+    time *= UInt64(cachedTimebaseInfo.numer)
+    time /= UInt64(cachedTimebaseInfo.denom)
     return time
 }
 
@@ -205,6 +245,9 @@ private func scrollReverserCallback(
     userInfo: UnsafeMutableRawPointer?
 ) -> Unmanaged<CGEvent>? {
     guard let userInfo = userInfo else { return Unmanaged.passUnretained(eventRef) }
+    // Per-event pool matching original's @autoreleasepool (MouseTap.m L59) —
+    // NSEvent bridging below creates autoreleased objects on every scroll event.
+    return autoreleasepool {
     let tap = Unmanaged<ScrollReverser>.fromOpaque(userInfo).takeUnretainedValue()
     let time = nanoseconds()
 
@@ -256,7 +299,7 @@ private func scrollReverserCallback(
         let phase = momentumPhase(for: eventRef)
 
         // Work out the event source (matching original block exactly)
-        let lastSource = tap.lastSource
+        let previousSource = tap.lastSource
         let source: ScrollEventSource = {
             if !continuous {
                 return .mouse  // assume anything not-continuous is a mouse
@@ -272,7 +315,19 @@ private func scrollReverserCallback(
         }()
         tap.lastSource = source
 
+        #if DEBUG
+        // Matching original "Source changed" log (MouseTap.m L187-189)
+        if source != previousSource {
+            fputs("[ScrollReverser] Source changed: \(previousSource) → \(source)\n", stderr)
+        }
+        #endif
+
         // Should we reverse? (matching original invert logic)
+        // NOTE (documented divergence): the original applies the discrete step
+        // multiplier even when reversal is off (vmul=+vstep). Our per-device
+        // settings model gates everything behind shouldReverse, so the step
+        // multiplier only applies to a source whose reversal is enabled.
+        // This is the intended KMC behavior — do not "fix" without a decision.
         let shouldReverse: Bool = {
             switch source {
             case .trackpad:
@@ -320,6 +375,9 @@ private func scrollReverserCallback(
         }
 
         // Horizontal
+        // NOTE (documented divergence): original MouseTap.m L228 multiplies the
+        // horizontal IOHID axis by vmul — an upstream typo (all other horizontal
+        // writes use hmul). We deliberately use hmul here. Keep as-is.
         if hmul != 1 {
             eventRef.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: axis2 * hmul)
             eventRef.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: fixedpt_axis2 * Double(hmul))
@@ -339,4 +397,5 @@ private func scrollReverserCallback(
     // Other event type — re-enable tap if it was disabled
     tap.enableTap()
     return Unmanaged.passUnretained(eventRef)
+    }  // autoreleasepool
 }

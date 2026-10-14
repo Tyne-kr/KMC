@@ -105,7 +105,10 @@ struct SettingsView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.ghTextPri)
                     Spacer()
+                    // Gate turning ON without permissions; turning OFF is always allowed.
                     GHToggle(isOn: $reverser.isEnabled)
+                        .disabled(!permissions.hasAllPermissions && !reverser.isEnabled)
+                        .opacity(permissions.hasAllPermissions || reverser.isEnabled ? 1 : 0.35)
                 }
 
                 if reverser.isEnabled {
@@ -167,6 +170,8 @@ struct SettingsView: View {
                         .foregroundColor(.ghTextPri)
                     Spacer()
                     GHToggle(isOn: $remapper.isEnabled)
+                        .disabled(!permissions.hasAllPermissions && !remapper.isEnabled)
+                        .opacity(permissions.hasAllPermissions || remapper.isEnabled ? 1 : 0.35)
                 }
 
                 if remapper.isEnabled {
@@ -325,9 +330,17 @@ struct SettingsView: View {
 
     // MARK: - Footer
 
+    /// Version comes from the .app bundle (build-app.sh sets it) — single
+    /// source of truth. "dev" when running outside a bundle (swift run).
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
+    @State private var launchAtLogin = false
+
     private var footerSection: some View {
         HStack {
-            Text("KMC v1.9.6 by Jc")
+            Text("KMC v\(appVersion) by Jc")
                 .font(.system(size: 10))
                 .foregroundColor(.ghTextTer)
 
@@ -345,12 +358,17 @@ struct SettingsView: View {
                 Button("이벤트 로거") { showEventLogger = true }
                     .buttonStyle(GHSmallButton())
 
-                Button(action: { LaunchAtLoginHelper.toggle() }) {
+                Button(action: {
+                    LaunchAtLoginHelper.setEnabled(!launchAtLogin)
+                    launchAtLogin = LaunchAtLoginHelper.isEnabled
+                }) {
                     Image(systemName: "power")
                         .font(.system(size: 10))
+                        .foregroundColor(launchAtLogin ? .ghAccent : .ghTextSec)
                 }
                 .buttonStyle(GHSmallButton())
-                .help("로그인 시 자동 시작")
+                .help(launchAtLogin ? "로그인 시 자동 시작: 켜짐" : "로그인 시 자동 시작: 꺼짐")
+                .onAppear { launchAtLogin = LaunchAtLoginHelper.isEnabled }
             }
         }
         .padding(.horizontal, 4)
@@ -373,6 +391,9 @@ struct SettingsView: View {
         EventLoggerView()
             .frame(width: 500, height: 400)
             .preferredColorScheme(.dark)
+            // Two extra event taps must not keep running invisibly after the
+            // sheet closes.
+            .onDisappear { EventLogger.shared.stopLogging() }
     }
 }
 
@@ -584,9 +605,12 @@ struct GHLinkButton: ButtonStyle {
 // MARK: - Launch at Login Helper
 
 enum LaunchAtLoginHelper {
+    static var isEnabled: Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
     static func toggle() {
-        let current = SMAppService.mainApp.status == .enabled
-        setEnabled(!current)
+        setEnabled(!isEnabled)
     }
 
     static func setEnabled(_ enabled: Bool) {

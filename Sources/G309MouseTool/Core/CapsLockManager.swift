@@ -6,7 +6,13 @@ import Foundation
 /// 1. `hidutil`: Caps Lock → F18 at HID driver level (bypasses all macOS Caps Lock special handling)
 /// 2. `defaults write`: F18 is set as "다음 입력 소스 선택" shortcut (no manual setup needed)
 ///
-/// Both reset on reboot → re-applied on every app launch via `reapplyIfNeeded()`.
+/// Lifetimes differ: the hidutil mapping resets on reboot (re-applied on launch
+/// via `reapplyIfNeeded()`), but the symbolic hotkey is a persisted preference —
+/// so `disable` explicitly writes it back to disabled.
+///
+/// Known limitation (single-user tool): enable overwrites the entire hidutil
+/// UserKeyMapping array — any mapping set by other tools (e.g. Karabiner via
+/// hidutil) is replaced.
 final class CapsLockManager: ObservableObject {
 
     static let shared = CapsLockManager()
@@ -30,6 +36,27 @@ final class CapsLockManager: ObservableObject {
     </dict>\
     </dict>
     """
+
+    // Same binding but disabled — written on disable so the F18 shortcut we
+    // created doesn't persist forever (symbolichotkeys survives reboots).
+    private static let hotkey61F18Disabled = """
+    <dict>\
+    <key>enabled</key><false/>\
+    <key>value</key><dict>\
+    <key>parameters</key><array>\
+    <integer>65535</integer>\
+    <integer>79</integer>\
+    <integer>0</integer>\
+    </array>\
+    <key>type</key><string>standard</string>\
+    </dict>\
+    </dict>
+    """
+
+    /// Serial queue: enable/disable are multi-step shell sequences — rapid
+    /// toggling on a concurrent queue could interleave them and leave the
+    /// system in a state matching neither.
+    private let workQueue = DispatchQueue(label: "com.jc.kmc.capslock", qos: .userInitiated)
 
     @Published var isEnabled: Bool = false {
         didSet {
@@ -60,7 +87,7 @@ final class CapsLockManager: ObservableObject {
     // MARK: - Enable / Disable (non-blocking)
 
     private func enableAsync() {
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
+        workQueue.async { [self] in
             let json = """
             {"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":\(Self.capsLockSrc),"HIDKeyboardModifierMappingDst":\(Self.f18Dst)}],"CapsLockDelayOverride":0}
             """
@@ -71,9 +98,13 @@ final class CapsLockManager: ObservableObject {
     }
 
     private func disableAsync() {
-        DispatchQueue.global(qos: .userInitiated).async { [self] in
+        workQueue.async { [self] in
+            // 500000µs approximates the stock Caps Lock delay until the next
+            // reboot fully clears the override (hidutil settings don't persist).
             runHidutil(json: #"{"UserKeyMapping":[],"CapsLockDelayOverride":500000}"#)
-            fputs("[CapsLock] Disabled: restored defaults\n", stderr)
+            // The symbolic hotkey DOES persist — disable the F18 binding we set.
+            writeHotkey61(Self.hotkey61F18Disabled)
+            fputs("[CapsLock] Disabled: mapping cleared + F18 shortcut disabled\n", stderr)
         }
     }
 
@@ -81,13 +112,16 @@ final class CapsLockManager: ObservableObject {
 
     /// Set symbolic hotkey 61 (Select next input source) to F18
     private func setInputSourceShortcutToF18() {
-        // Write the shortcut to com.apple.symbolichotkeys
+        writeHotkey61(Self.hotkey61F18)
+    }
+
+    private func writeHotkey61(_ plistValue: String) {
         let writeProcess = Process()
         writeProcess.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
         writeProcess.arguments = [
             "write", "com.apple.symbolichotkeys",
             "AppleSymbolicHotKeys", "-dict-add", "61",
-            Self.hotkey61F18
+            plistValue
         ]
         writeProcess.standardOutput = FileHandle.nullDevice
         writeProcess.standardError = FileHandle.nullDevice
@@ -95,6 +129,10 @@ final class CapsLockManager: ObservableObject {
         do {
             try writeProcess.run()
             writeProcess.waitUntilExit()
+            if writeProcess.terminationStatus != 0 {
+                fputs("[CapsLock] defaults write exited \(writeProcess.terminationStatus)\n", stderr)
+                return
+            }
         } catch {
             fputs("[CapsLock] defaults write error: \(error)\n", stderr)
             return
@@ -136,6 +174,9 @@ final class CapsLockManager: ObservableObject {
         do {
             try process.run()
             process.waitUntilExit()
+            if process.terminationStatus != 0 {
+                fputs("[CapsLock] hidutil exited \(process.terminationStatus)\n", stderr)
+            }
         } catch {
             fputs("[CapsLock] hidutil error: \(error)\n", stderr)
         }

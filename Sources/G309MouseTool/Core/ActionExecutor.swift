@@ -1,4 +1,5 @@
 import Cocoa
+import os
 
 /// Executes macOS actions in response to mouse gestures.
 /// Uses synthetic DockSwipe events (reverse-engineered from macOS internals)
@@ -47,6 +48,17 @@ enum ActionExecutor {
 
     // MARK: - Public API
 
+    /// Serial queue: DockSwipe phase sequences must never interleave.
+    /// Two overlapping began→changed→ended streams (continuous swipe, or a
+    /// quick re-trigger within ~0.5s) corrupt the Dock's gesture state machine
+    /// — the exact "stuck Space" bug the re-send workaround exists to prevent.
+    private static let swipeQueue = DispatchQueue(label: "com.jc.kmc.dockswipe", qos: .userInteractive)
+
+    /// Generation counter: each swipe invalidates the previous swipe's pending
+    /// stuck-bug re-sends, so a stale `ended` (wrong offset sign) can't land
+    /// in the middle of the next gesture's phase stream.
+    private static let swipeGeneration = OSAllocatedUnfairLock(initialState: UInt64(0))
+
     static func executeSpaceSwitch(direction: GestureAction) {
         let sign: Double = (direction == .swipeRight) ? -1.0 : 1.0
 
@@ -54,7 +66,12 @@ enum ActionExecutor {
         fputs("[ActionExecutor] executeSpaceSwitch: \(direction) sign=\(sign)\n", stderr)
         #endif
 
-        DispatchQueue.global(qos: .userInteractive).async {
+        let myGeneration = swipeGeneration.withLock { gen -> UInt64 in
+            gen += 1
+            return gen
+        }
+
+        swipeQueue.async {
             let steps: [(phase: Int64, offset: Double)] = [
                 (kPhaseBegan,   sign * 0.1),
                 (kPhaseChanged, sign * 0.4),
@@ -70,11 +87,15 @@ enum ActionExecutor {
             let finalOffset = sign * 1.5
             postDockSwipeEvent(phase: kPhaseEnded, originOffset: finalOffset, type: kDockSwipeHorizontal)
 
-            // Stuck-bug workaround (Mac Mouse Fix): re-send end events
-            usleep(200_000)
-            postDockSwipeEvent(phase: kPhaseEnded, originOffset: finalOffset, type: kDockSwipeHorizontal)
-            usleep(300_000)
-            postDockSwipeEvent(phase: kPhaseEnded, originOffset: finalOffset, type: kDockSwipeHorizontal)
+            // Stuck-bug workaround (Mac Mouse Fix): re-send end events.
+            // Scheduled (not slept) so the serial queue frees up for the next
+            // gesture immediately; skipped if a newer gesture has started.
+            for delay in [0.2, 0.5] {
+                swipeQueue.asyncAfter(deadline: .now() + delay) {
+                    guard swipeGeneration.withLock({ $0 }) == myGeneration else { return }
+                    postDockSwipeEvent(phase: kPhaseEnded, originOffset: finalOffset, type: kDockSwipeHorizontal)
+                }
+            }
 
             #if DEBUG
             fputs("[ActionExecutor] DockSwipe completed: \(direction == .swipeRight ? "→" : "←")\n", stderr)

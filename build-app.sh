@@ -4,14 +4,14 @@ set -e
 APP_NAME="G309MouseTool"
 BUNDLE_NAME="KMC"
 BUNDLE_ID="com.jc.kmc"
-VERSION="1.9.6"
+VERSION="2.0.0"
 BUILD_DIR=".build/release"
 APP_DIR="build/KMC_v${VERSION}.app"
 
 echo "=== 기존 빌드 삭제 ==="
 rm -rf build/
-pkill -f G309MouseTool 2>/dev/null || true
-pkill -f KMC 2>/dev/null || true
+# -x: 프로세스 이름 정확 일치만 종료 (-f substring 매칭은 무관한 프로세스 오살 위험)
+pkill -x G309MouseTool 2>/dev/null || true
 sleep 1
 
 echo "=== Building KMC v${VERSION} (Release) ==="
@@ -63,6 +63,8 @@ ICON_SRC="Sources/G309MouseTool/Resources/AppIcon.icns"
 if [ -f "$ICON_SRC" ]; then
     cp "$ICON_SRC" "${APP_DIR}/Contents/Resources/AppIcon.icns"
     echo "아이콘 복사 완료"
+else
+    echo "경고: 앱 아이콘 없음 ($ICON_SRC)" >&2
 fi
 
 # PkgInfo
@@ -72,6 +74,11 @@ echo -n "APPL????" > "${APP_DIR}/Contents/PkgInfo"
 echo "=== Code signing ==="
 codesign --force --deep --sign - "${APP_DIR}"
 echo "서명 완료: $(codesign -dv "${APP_DIR}" 2>&1 | grep Identifier)"
+
+# Release zip (ditto preserves bundle structure + signature; --norsrc drops ._* AppleDouble noise)
+echo "=== 배포용 zip 생성 ==="
+ditto -c -k --norsrc --keepParent "${APP_DIR}" "build/KMC_v${VERSION}.zip"
+echo "zip: build/KMC_v${VERSION}.zip"
 
 echo ""
 echo "=== 빌드 완료! ==="
