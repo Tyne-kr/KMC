@@ -242,10 +242,11 @@ struct SettingsView: View {
                         GHMiniToggle("연속 전환", isOn: $remapper.allowContinuousSwipe)
                     }
 
-                    // Direction hint
+                    // Direction hint — measured with system natural scrolling ON
+                    // (macOS 27.0.1, 2026-10-14); see ButtonRemapper.invertDirection.
                     Text(remapper.invertDirection
-                        ? "마우스 ← 이동 → 오른쪽 Space (자연스러운 스크롤)"
-                        : "마우스 → 이동 → 오른쪽 Space (표준)")
+                        ? "마우스 → 이동 → 오른쪽 Space (이동 방향과 같음)"
+                        : "마우스 → 이동 → 왼쪽 Space (트랙패드식 반대 방향)")
                         .font(.system(size: 10))
                         .foregroundColor(.ghTextTer)
                 }

@@ -4,7 +4,7 @@ set -e
 APP_NAME="G309MouseTool"
 BUNDLE_NAME="KMC"
 BUNDLE_ID="com.jc.kmc"
-VERSION="2.0.1"
+VERSION="2.0.2"
 BUILD_DIR=".build/release"
 APP_DIR="build/KMC_v${VERSION}.app"
 

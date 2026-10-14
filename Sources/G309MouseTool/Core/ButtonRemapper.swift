@@ -4,9 +4,13 @@ import os
 
 // MARK: - Gesture Action
 
+/// Names follow the DockSwipe offset sign, not the destination: with system natural
+/// scrolling ON, `.swipeRight` lands on the LEFT Space and `.swipeLeft` on the RIGHT
+/// one (measured on macOS 27.0.1, 2026-10-14). Kept as-is so existing settings
+/// keep their behavior.
 enum GestureAction {
-    case swipeLeft   // Move to left Space
-    case swipeRight  // Move to right Space
+    case swipeLeft
+    case swipeRight
 }
 
 // MARK: - Gesture State Machine
@@ -106,9 +110,10 @@ final class ButtonRemapper: ObservableObject {
         didSet { guard !isLoading else { return }; UserDefaults.standard.set(allowContinuousSwipe, forKey: "ButtonRemapper.continuousSwipe") }
     }
 
-    /// Invert swipe direction (natural vs standard)
-    /// false = 마우스 이동 방향 = Space 이동 방향 (기본)
-    /// true  = 마우스 이동 방향 반대 = Space 이동 방향 (자연스러운 스크롤 방식)
+    /// Swap which Space a drag direction selects. Measured with system natural
+    /// scrolling ON (macOS 27.0.1, 2026-10-14):
+    /// false = 마우스 → 이동 시 왼쪽 Space (트랙패드식 반대 방향, 기본)
+    /// true  = 마우스 → 이동 시 오른쪽 Space (마우스 이동 방향과 같음)
     @Published var invertDirection: Bool = false {
         didSet { guard !isLoading else { return }; UserDefaults.standard.set(invertDirection, forKey: "ButtonRemapper.invertDirection") }
     }
@@ -365,7 +370,7 @@ final class ButtonRemapper: ObservableObject {
 
         if state == .triggered && abs(accumulatedDeltaX) >= thresholdPixels {
             let movedRight = accumulatedDeltaX > 0
-            // invertDirection: false = 이동 방향과 같음, true = 반대
+            // See invertDirection: false = Space moves opposite to the drag, true = same way
             if invertDirection {
                 actionToFire = movedRight ? .swipeLeft : .swipeRight
             } else {
